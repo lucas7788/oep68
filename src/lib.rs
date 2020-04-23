@@ -13,24 +13,24 @@ const ADMIN: Address = ostd::macros::base58!("AXdmdzbyf3WZKQzRtrNQwAR91ZxMUfhXkt
 const ONG_CONTRACT_ADDRESS: Address = ostd::macros::base58!("AFmseVrdL9f9oyCzZefL9tG6UbvhfRZMHJ");
 const ONT_CONTRACT_ADDRESS: Address = ostd::macros::base58!("AFmseVrdL9f9oyCzZefL9tG6UbvhUMqNMV");
 
-const NEO: &str = "neo";
-const WASM: &str = "wasm";
-const NATIVE: &str = "native";
-const KEY_TOKEN: &str = "01";
-const KEY_STREAM_ID: &str = "02";
-const KEY_STREAM: &str = "03";
-const KEY_PROXY: &str = "04";
+const NEO: &[u8] = b"neo";
+const WASM: &[u8] = b"wasm";
+const KEY_TOKEN: &[u8] = b"01";
+const KEY_STREAM_ID: &[u8] = b"02";
+const KEY_STREAM: &[u8] = b"03";
+const KEY_PROXY: &[u8] = b"04";
+const KEY_MIGRATE: &[u8] = b"05";
 
 #[derive(Encoder, Decoder)]
 struct Stream {
     stream_id: U128,
-    from: Address,    // the payer
-    to: Address,      // the receiver
-    amount: U128,     // the total money to be streamed
-    token: Address,   // the token address to be streamed
-    start_time: U128, // the unix timestamp for when the stream starts
-    stop_time: U128,  // the unix timestamp for when the stream stops
-    transfered_amt: U128,
+    from: Address,        // the payer
+    to: Address,          // the receiver
+    amount: U128,         // the total money to be streamed
+    token: Address,       // the token address to be streamed
+    start_time: U128,     // the unix timestamp for when the stream starts
+    stop_time: U128,      // the unix timestamp for when the stream stops
+    transfered_amt: U128, // has transfered to to_address
 }
 
 #[derive(Encoder, Decoder)]
@@ -40,7 +40,7 @@ struct Token {
 }
 
 fn register_token(token_address: &Address, token_ty: &str) -> bool {
-    if token_ty != NEO && token_ty != WASM && token_ty != NATIVE {
+    if token_ty.as_bytes() != NEO && token_ty.as_bytes() != WASM {
         return false;
     }
     assert!(runtime::check_witness(&ADMIN));
@@ -54,6 +54,34 @@ fn register_token(token_address: &Address, token_ty: &str) -> bool {
     });
     database::put(KEY_TOKEN, tokens);
     true
+}
+
+fn delete_token(token_addr: Address) -> bool {
+    assert!(runtime::check_witness(&ADMIN));
+    let mut tokens = get_registered_token();
+    let index = tokens
+        .iter()
+        .position(|x| x.token_address == token_addr)
+        .unwrap();
+    tokens.remove(index);
+    true
+}
+
+fn add_migrate(from: &Address, to: Address) -> bool {
+    assert!(runtime::check_witness(&ADMIN));
+    database::put(utils::gen_migrate_key(from), to);
+    true
+}
+
+fn get_migrate(from: &Address) -> Address {
+    let mut from_mut = from.clone();
+    loop {
+        if let Some(temp) = database::get::<_, Address>(utils::gen_migrate_key(&from_mut)) {
+            from_mut = temp
+        }
+        break;
+    }
+    from_mut
 }
 
 fn get_registered_token() -> Vec<Token> {
@@ -108,8 +136,12 @@ fn create_stream(
 
 fn balance_of(stream_id: U128, addr: &Address) -> U128 {
     if let Some(stream) = get_stream(stream_id) {
-        let cur_time: U128 = runtime::timestamp() as U128;
-        assert!(cur_time >= stream.start_time && cur_time <= stream.stop_time);
+        let mut cur_time: U128 = runtime::timestamp() as U128;
+        if cur_time < stream.start_time {
+            cur_time = stream.start_time;
+        } else if cur_time > stream.stop_time {
+            cur_time = stream.stop_time
+        }
         let to_balance = (cur_time - stream.start_time) as U128
             * (stream.amount - stream.transfered_amt)
             / (stream.stop_time - stream.start_time);
@@ -143,6 +175,7 @@ fn withdraw_from_stream(stream_id: U128) -> bool {
         database::put(KEY_STREAM, &stream);
         EventBuilder::new()
             .string("withdraw_from_stream")
+            .number(stream_id)
             .address(&stream.to)
             .number(stream.amount)
             .notify();
@@ -196,17 +229,14 @@ fn get_stream(id: U128) -> Option<Stream> {
 }
 
 fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool {
-    let ty = get_token_ty(token);
-    match ty.as_str() {
-        NATIVE => {
-            if token == &ONG_CONTRACT_ADDRESS {
-                return ong::transfer(from, to, amount);
-            } else if token == &ONT_CONTRACT_ADDRESS {
-                return ont::transfer(from, to, amount);
-            } else {
-                panic!("not support token address")
-            }
-        }
+    if token == &ONG_CONTRACT_ADDRESS {
+        return ong::transfer(from, to, amount);
+    } else if token == &ONT_CONTRACT_ADDRESS {
+        return ont::transfer(from, to, amount);
+    }
+    let token_new = get_migrate(token);
+    let ty = get_token_ty(&token_new);
+    match ty.as_bytes() {
         NEO => {
             let mut sink = Sink::new(16);
             sink.write(u128_to_neo_bytes(amount));
@@ -217,7 +247,7 @@ fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool
             sink.write("transfer".to_string());
             sink.write(103u8);
             sink.write(token);
-            let res = runtime::call_contract(token, sink.bytes());
+            let res = runtime::call_contract(&token_new, sink.bytes());
             if let Some(data) = res {
                 let mut source = Source::new(&data);
                 return source.read().unwrap();
@@ -258,6 +288,7 @@ fn get_token_ty(token_addr: &Address) -> String {
     }
     "".to_string()
 }
+
 fn has_registered_token(addrs: &[Token], addr: &Address) -> bool {
     for item in addrs.iter() {
         if &item.token_address == addr {
@@ -289,6 +320,14 @@ pub fn invoke() {
         }
         "get_registered_token" => {
             sink.write(get_registered_token());
+        }
+        "delete_token" => {
+            let token_addr = source.read().unwrap();
+            sink.write(delete_token(token_addr));
+        }
+        "add_migrate" => {
+            let (old_token, new_token) = source.read().unwrap();
+            sink.write(add_migrate(old_token, new_token));
         }
         "create_stream" => {
             let (from, to, amount, token, start_time, stop_time) = source.read().unwrap();
@@ -323,7 +362,10 @@ mod utils {
     use super::*;
     use ostd::types::u128_to_neo_bytes;
     pub fn gen_stream_key(id: U128) -> Vec<u8> {
-        [KEY_STREAM.as_bytes(), u128_to_neo_bytes(id).as_slice()].concat()
+        [KEY_STREAM, u128_to_neo_bytes(id).as_slice()].concat()
+    }
+    pub fn gen_migrate_key(from: &Address) -> Vec<u8> {
+        [KEY_MIGRATE, from.as_ref()].concat()
     }
 }
 
@@ -343,7 +385,12 @@ mod tests {
         assert_eq!(crate::get_proxy().unwrap(), addr);
 
         let token_address = crate::ONG_CONTRACT_ADDRESS;
-        assert!(crate::register_token(&token_address, crate::NATIVE));
+        assert!(crate::register_token(&token_address, "neo"));
         assert_eq!(crate::get_registered_token().len(), 1);
+
+        let token = Address::repeat_byte(2);
+        let token2 = Address::repeat_byte(3);
+        assert!(crate::add_migrate(&token, token2.clone()));
+        assert_eq!(crate::get_migrate(&token), token2);
     }
 }
