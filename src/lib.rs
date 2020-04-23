@@ -177,9 +177,13 @@ fn balance_of(stream_id: U128, addr: &Address) -> U128 {
         } else if cur_time > stream.stop_time {
             cur_time = stream.stop_time
         }
-        let to_balance = (cur_time - stream.start_time) as U128
-            * (stream.amount - stream.transfered_amt)
-            / (stream.stop_time - stream.start_time);
+        let mul_val = (stream.amount as u128)
+            .checked_mul((cur_time - stream.start_time) as u128)
+            .unwrap();
+        let div_val = mul_val
+            .checked_div(stream.stop_time - stream.start_time)
+            .unwrap();
+        let to_balance = div_val.checked_sub(stream.transfered_amt).unwrap();
         if &stream.from == addr {
             return stream.amount - stream.transfered_amt - to_balance;
         } else if &stream.to == addr {
