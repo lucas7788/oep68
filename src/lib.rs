@@ -25,13 +25,13 @@ const KEY_MIGRATE: &[u8] = b"05";
 #[derive(Encoder, Decoder)]
 struct Stream {
     stream_id: U128,
-    from: Address,        // the payer
-    to: Address,          // the receiver
-    amount: U128,         // the total money to be streamed
-    token: Address,       // the token address to be streamed
-    start_time: U128,     // the unix timestamp for when the stream starts
-    stop_time: U128,      // the unix timestamp for when the stream stops
-    transfered_amt: U128, // has transfered to to_address
+    from: Address,         // the payer
+    to: Address,           // the receiver
+    amount: U128,          // the total money to be streamed
+    token: Address,        // the token address to be streamed
+    start_time: U128,      // the unix timestamp for when the stream starts
+    stop_time: U128,       // the unix timestamp for when the stream stops
+    transferred_amt: U128, // has transfered to to_address
 }
 
 struct Token {
@@ -109,12 +109,8 @@ fn add_migrate(from: &Address, to: Address) -> bool {
 
 fn get_migrate(from: &Address) -> Address {
     let mut from_mut = from.clone();
-    loop {
-        if let Some(temp) = database::get::<_, Address>(utils::gen_migrate_key(&from_mut)) {
-            from_mut = temp
-        } else {
-            break;
-        }
+    while let Some(temp) = database::get::<_, Address>(utils::gen_migrate_key(&from_mut)) {
+        from_mut = temp;
     }
     from_mut
 }
@@ -152,7 +148,7 @@ fn create_stream(
         token,
         start_time,
         stop_time,
-        transfered_amt: 0,
+        transferred_amt: 0,
     };
     database::put(utils::gen_stream_key(stream_id), stream);
     update_stream_id(stream_id + 1);
@@ -183,9 +179,9 @@ fn balance_of(stream_id: U128, addr: &Address) -> U128 {
         let div_val = mul_val
             .checked_div(stream.stop_time - stream.start_time)
             .unwrap();
-        let to_balance = div_val.checked_sub(stream.transfered_amt).unwrap();
+        let to_balance = div_val.checked_sub(stream.transferred_amt).unwrap();
         if &stream.from == addr {
-            return stream.amount - stream.transfered_amt - to_balance;
+            return stream.amount - stream.transferred_amt - to_balance;
         } else if &stream.to == addr {
             return to_balance;
         }
@@ -210,7 +206,7 @@ fn withdraw_from_stream(stream_id: U128) -> bool {
             &stream.to,
             should_transfer_amt
         ));
-        stream.transfered_amt += should_transfer_amt;
+        stream.transferred_amt += should_transfer_amt;
         database::put(KEY_STREAM, &stream);
         EventBuilder::new()
             .string("withdraw_from_stream")
