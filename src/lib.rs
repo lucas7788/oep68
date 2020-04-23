@@ -1,7 +1,8 @@
 #![cfg_attr(not(feature = "mock"), no_std)]
 #![feature(proc_macro_hygiene)]
 extern crate ontio_std as ostd;
-use ostd::abi::{Decoder, Encoder, EventBuilder, Sink, Source};
+use ostd::abi::Error::UnexpectedEOF;
+use ostd::abi::{Decoder, Encoder, Error, EventBuilder, Sink, Source};
 use ostd::contract::{ong, ont};
 use ostd::database;
 use ostd::prelude::*;
@@ -33,14 +34,47 @@ struct Stream {
     transfered_amt: U128, // has transfered to to_address
 }
 
-#[derive(Encoder, Decoder)]
 struct Token {
     token_address: Address,
-    token_ty: String,
+    token_ty: VmType,
 }
 
-fn register_token(token_address: &Address, token_ty: &str) -> bool {
-    if token_ty.as_bytes() != NEO && token_ty.as_bytes() != WASM {
+impl<'a> Decoder<'a> for Token {
+    fn decode(source: &mut Source<'a>) -> Result<Self, Error> {
+        Ok(Token {
+            token_address: source.read()?,
+            token_ty: VmType(source.read_byte()?),
+        })
+    }
+}
+
+impl Encoder for Token {
+    fn encode(&self, sink: &mut Sink) {
+        sink.write(&self.token_address);
+        sink.write(self.token_ty.0);
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+struct VmType(u8);
+
+const NeoVm: VmType = VmType(0);
+const WasmVm: VmType = VmType(1);
+
+impl<'a> Decoder<'a> for VmType {
+    fn decode(source: &mut Source<'a>) -> Result<Self, Error> {
+        let buf: &[u8] = source.read().unwrap();
+        if buf == NEO {
+            return Ok(NeoVm);
+        } else if buf == WASM {
+            return Ok(WasmVm);
+        }
+        Err(UnexpectedEOF)
+    }
+}
+
+fn register_token(token_address: &Address, vmTy: VmType) -> bool {
+    if vmTy.0 != NeoVm.0 && vmTy.0 != WasmVm.0 {
         return false;
     }
     assert!(runtime::check_witness(&ADMIN));
@@ -50,7 +84,7 @@ fn register_token(token_address: &Address, token_ty: &str) -> bool {
     }
     tokens.push(Token {
         token_address: token_address.clone(),
-        token_ty: token_ty.to_string(),
+        token_ty: vmTy,
     });
     database::put(KEY_TOKEN, tokens);
     true
@@ -237,8 +271,8 @@ fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool
     }
     let token_new = get_migrate(token);
     let ty = get_token_ty(&token_new);
-    match ty.as_bytes() {
-        NEO => {
+    match ty {
+        NeoVm => {
             let mut sink = Sink::new(16);
             sink.write(u128_to_neo_bytes(amount));
             sink.write_neovm_address(to);
@@ -256,7 +290,7 @@ fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool
                 return false;
             }
         }
-        WASM => {}
+        WasmVm => {}
         _ => panic!(""),
     }
     false
@@ -280,14 +314,14 @@ fn get_stream_id() -> U128 {
     1
 }
 
-fn get_token_ty(token_addr: &Address) -> String {
+fn get_token_ty(token_addr: &Address) -> VmType {
     let tokens = get_registered_token();
     for token in tokens.iter() {
         if &token.token_address == token_addr {
             return token.token_ty.clone();
         }
     }
-    "".to_string()
+    VmType(2)
 }
 
 fn has_registered_token(addrs: &[Token], addr: &Address) -> bool {
@@ -386,7 +420,7 @@ mod tests {
         assert_eq!(crate::get_proxy().unwrap(), addr);
 
         let token_address = crate::ONG_CONTRACT_ADDRESS;
-        assert!(crate::register_token(&token_address, "neo"));
+        assert!(crate::register_token(&token_address, crate::NeoVm));
         assert_eq!(crate::get_registered_token().len(), 1);
 
         let token = Address::repeat_byte(2);
