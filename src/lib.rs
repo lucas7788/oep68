@@ -58,23 +58,23 @@ impl Encoder for Token {
 #[derive(Copy, Clone, PartialEq, Eq)]
 struct VmType(u8);
 
-const NeoVm: VmType = VmType(0);
-const WasmVm: VmType = VmType(1);
+const NEO_VM: VmType = VmType(0);
+const WASM_VM: VmType = VmType(1);
 
 impl<'a> Decoder<'a> for VmType {
     fn decode(source: &mut Source<'a>) -> Result<Self, Error> {
         let buf: &[u8] = source.read().unwrap();
         if buf == NEO {
-            return Ok(NeoVm);
+            return Ok(NEO_VM);
         } else if buf == WASM {
-            return Ok(WasmVm);
+            return Ok(WASM_VM);
         }
         Err(UnexpectedEOF)
     }
 }
 
-fn register_token(token_address: &Address, vmTy: VmType) -> bool {
-    if vmTy.0 != NeoVm.0 && vmTy.0 != WasmVm.0 {
+fn register_token(token_address: &Address, vm_ty: VmType) -> bool {
+    if vm_ty != NEO_VM && vm_ty != WASM_VM {
         return false;
     }
     assert!(runtime::check_witness(&ADMIN));
@@ -84,7 +84,7 @@ fn register_token(token_address: &Address, vmTy: VmType) -> bool {
     }
     tokens.push(Token {
         token_address: token_address.clone(),
-        token_ty: vmTy,
+        token_ty: vm_ty,
     });
     database::put(KEY_TOKEN, tokens);
     true
@@ -272,7 +272,7 @@ fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool
     let token_new = get_migrate(token);
     let ty = get_token_ty(&token_new);
     match ty {
-        NeoVm => {
+        NEO_VM => {
             let mut sink = Sink::new(16);
             sink.write(u128_to_neo_bytes(amount));
             sink.write_neovm_address(to);
@@ -290,7 +290,7 @@ fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool
                 return false;
             }
         }
-        WasmVm => {}
+        WASM_VM => {}
         _ => panic!(""),
     }
     false
@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(crate::get_proxy().unwrap(), addr);
 
         let token_address = crate::ONG_CONTRACT_ADDRESS;
-        assert!(crate::register_token(&token_address, crate::NeoVm));
+        assert!(crate::register_token(&token_address, crate::NEO_VM));
         assert_eq!(crate::get_registered_token().len(), 1);
 
         let token = Address::repeat_byte(2);
