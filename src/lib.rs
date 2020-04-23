@@ -78,8 +78,9 @@ fn get_migrate(from: &Address) -> Address {
     loop {
         if let Some(temp) = database::get::<_, Address>(utils::gen_migrate_key(&from_mut)) {
             from_mut = temp
+        } else {
+            break;
         }
-        break;
     }
     from_mut
 }
@@ -391,6 +392,9 @@ mod tests {
         let token = Address::repeat_byte(2);
         let token2 = Address::repeat_byte(3);
         assert!(crate::add_migrate(&token, token2.clone()));
-        assert_eq!(crate::get_migrate(&token), token2);
+        assert_eq!(crate::get_migrate(&token), token2.clone());
+        let token3 = Address::repeat_byte(4);
+        assert!(crate::add_migrate(&token2, token3.clone()));
+        assert_eq!(crate::get_migrate(&token), token3);
     }
 }
