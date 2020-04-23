@@ -25,25 +25,25 @@ const KEY_MIGRATE: &[u8] = b"05";
 #[derive(Encoder, Decoder)]
 struct Stream {
     stream_id: U128,
-    from: Address,         // the payer
-    to: Address,           // the receiver
-    amount: U128,          // the total money to be streamed
-    token: Address,        // the token address to be streamed
-    start_time: U128,      // the unix timestamp for when the stream starts
-    stop_time: U128,       // the unix timestamp for when the stream stops
-    transferred_amt: U128, // has transfered to to_address
+    from: Address,     // the payer
+    to: Address,       // the receiver
+    amount: U128,      // the total money to be streamed
+    token: Address,    // the token address to be streamed
+    start_time: U128,  // the unix timestamp for when the stream starts
+    stop_time: U128,   // the unix timestamp for when the stream stops
+    transferred: U128, // has transferred to to_address
 }
 
 struct Token {
     token_address: Address,
-    token_ty: VmType,
+    vm_ty: VmType,
 }
 
 impl<'a> Decoder<'a> for Token {
     fn decode(source: &mut Source<'a>) -> Result<Self, Error> {
         Ok(Token {
             token_address: source.read()?,
-            token_ty: VmType(source.read_byte()?),
+            vm_ty: VmType(source.read_byte()?),
         })
     }
 }
@@ -51,7 +51,7 @@ impl<'a> Decoder<'a> for Token {
 impl Encoder for Token {
     fn encode(&self, sink: &mut Sink) {
         sink.write(&self.token_address);
-        sink.write(self.token_ty.0);
+        sink.write(self.vm_ty.0);
     }
 }
 
@@ -84,7 +84,7 @@ fn register_token(token_address: &Address, vm_ty: VmType) -> bool {
     }
     tokens.push(Token {
         token_address: token_address.clone(),
-        token_ty: vm_ty,
+        vm_ty: vm_ty,
     });
     database::put(KEY_TOKEN, tokens);
     true
@@ -148,7 +148,7 @@ fn create_stream(
         token,
         start_time,
         stop_time,
-        transferred_amt: 0,
+        transferred: 0,
     };
     database::put(utils::gen_stream_key(stream_id), stream);
     update_stream_id(stream_id + 1);
@@ -179,9 +179,9 @@ fn balance_of(stream_id: U128, addr: &Address) -> U128 {
         let div_val = mul_val
             .checked_div(stream.stop_time - stream.start_time)
             .unwrap();
-        let to_balance = div_val.checked_sub(stream.transferred_amt).unwrap();
+        let to_balance = div_val.checked_sub(stream.transferred).unwrap();
         if &stream.from == addr {
-            return stream.amount - stream.transferred_amt - to_balance;
+            return stream.amount - stream.transferred - to_balance;
         } else if &stream.to == addr {
             return to_balance;
         }
@@ -206,7 +206,7 @@ fn withdraw_from_stream(stream_id: U128) -> bool {
             &stream.to,
             should_transfer_amt
         ));
-        stream.transferred_amt += should_transfer_amt;
+        stream.transferred += should_transfer_amt;
         database::put(KEY_STREAM, &stream);
         EventBuilder::new()
             .string("withdraw_from_stream")
@@ -318,7 +318,7 @@ fn get_token_ty(token_addr: &Address) -> VmType {
     let tokens = get_registered_token();
     for token in tokens.iter() {
         if &token.token_address == token_addr {
-            return token.token_ty.clone();
+            return token.vm_ty.clone();
         }
     }
     VmType(2)
