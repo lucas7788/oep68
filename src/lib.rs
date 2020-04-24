@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "mock"), no_std)]
 #![feature(proc_macro_hygiene)]
 extern crate ontio_std as ostd;
-use ostd::abi::Error::{IrregularData, UnexpectedEOF};
+use ostd::abi::Error::IrregularData;
 use ostd::abi::{Decoder, Encoder, Error, EventBuilder, Sink, Source};
 use ostd::contract::{ong, ont};
 use ostd::database;
