@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "mock"), no_std)]
 #![feature(proc_macro_hygiene)]
 extern crate ontio_std as ostd;
-use ostd::abi::Error::UnexpectedEOF;
+use ostd::abi::Error::{IrregularData, UnexpectedEOF};
 use ostd::abi::{Decoder, Encoder, Error, EventBuilder, Sink, Source};
 use ostd::contract::{ong, ont};
 use ostd::database;
@@ -63,20 +63,18 @@ const WASM_VM: VmType = VmType(1);
 
 impl<'a> Decoder<'a> for VmType {
     fn decode(source: &mut Source<'a>) -> Result<Self, Error> {
-        let buf: &[u8] = source.read().unwrap();
+        let buf: &[u8] = source.read()?;
         if buf == NEO {
             return Ok(NEO_VM);
         } else if buf == WASM {
             return Ok(WASM_VM);
         }
-        Err(UnexpectedEOF)
+        Err(IrregularData)
     }
 }
 
 fn register_token(token_address: &Address, vm_ty: VmType) -> bool {
-    if vm_ty != NEO_VM && vm_ty != WASM_VM {
-        return false;
-    }
+    assert!(vm_ty != NEO_VM && vm_ty != WASM_VM);
     assert!(runtime::check_witness(&ADMIN));
     let mut tokens = get_registered_token();
     if has_registered_token(&tokens, token_address) {
@@ -97,7 +95,7 @@ fn delete_token(token_addr: Address) -> bool {
         .iter()
         .position(|x| x.token_address == token_addr)
         .unwrap();
-    tokens.remove(index);
+    tokens.swap_remove(index);
     true
 }
 
@@ -411,6 +409,7 @@ mod tests {
     use ostd::mock::build_runtime;
     use ostd::prelude::*;
     use ostd::types::{Address, H256};
+    use std::collections::HashMap;
     #[test]
     fn test_new() {
         let addr = Address::repeat_byte(1);
