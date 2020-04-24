@@ -279,7 +279,7 @@ fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool
             sink.write(193u8);
             sink.write("transfer".to_string());
             sink.write(103u8);
-            sink.write(token);
+            sink.write(&token_new);
             let res = runtime::call_contract(&token_new, sink.bytes());
             if let Some(data) = res {
                 let mut source = Source::new(&data);
