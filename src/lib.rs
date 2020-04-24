@@ -268,7 +268,7 @@ fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool
         return ont::transfer(from, to, amount);
     }
     let token_new = get_migrate(token);
-    let ty = get_token_ty(&token_new);
+    let ty = get_vm_ty(&token_new);
     match ty {
         NEO_VM => {
             let mut sink = Sink::new(16);
@@ -312,7 +312,7 @@ fn get_stream_id() -> U128 {
     1
 }
 
-fn get_token_ty(token_addr: &Address) -> VmType {
+fn get_vm_ty(token_addr: &Address) -> VmType {
     let tokens = get_registered_token();
     for token in tokens.iter() {
         if &token.token_address == token_addr {
