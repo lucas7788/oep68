@@ -10,7 +10,7 @@ edition = "2018"
 crate-type = ["cdylib"] #Compile as a dynamic link library
 
 [dependencies]
-ontio-std = {git = "https://github.com/ontio/ontology-wasm-cdt-rust"}
-
+ontio-std = {git = "https://github.com/lucas7788/ontio-cdk-1.git", branch="add-crowd-funding-test"}
+etcommon-hexutil = { version = "0.2.4", default-features = false }
 [features]
 mock = ["ontio-std/mock"]

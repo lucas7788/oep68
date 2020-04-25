@@ -10,14 +10,14 @@ use ostd::runtime;
 use ostd::types::u128_to_neo_bytes;
 use ostd::types::{Address, U128};
 
-const ADMIN: Address = ostd::macros::base58!("AXdmdzbyf3WZKQzRtrNQwAR91ZxMUfhXkt");
+const ADMIN: Address = ostd::macros::base58!("AbtTQJYKfQxq4UdygDsbLVjE8uRrJ2H3tP");
 const ONG_CONTRACT_ADDRESS: Address = ostd::macros::base58!("AFmseVrdL9f9oyCzZefL9tG6UbvhfRZMHJ");
 const ONT_CONTRACT_ADDRESS: Address = ostd::macros::base58!("AFmseVrdL9f9oyCzZefL9tG6UbvhUMqNMV");
 
 const NEO: &[u8] = b"neo";
 const WASM: &[u8] = b"wasm";
 const KEY_TOKEN: &[u8] = b"01";
-const KEY_STREAM_ID: &[u8] = b"02";
+const KEY_NEXT_STREAM_ID: &[u8] = b"02";
 const KEY_STREAM: &[u8] = b"03";
 const KEY_PROXY: &[u8] = b"04";
 const KEY_MIGRATE: &[u8] = b"05";
@@ -58,8 +58,8 @@ impl Encoder for Token {
 #[derive(Copy, Clone, PartialEq, Eq)]
 struct VmType(u8);
 
-const NEO_VM: VmType = VmType(0);
-const WASM_VM: VmType = VmType(1);
+const NEO_VM: VmType = VmType(0u8);
+const WASM_VM: VmType = VmType(1u8);
 
 impl<'a> Decoder<'a> for VmType {
     fn decode(source: &mut Source<'a>) -> Result<Self, Error> {
@@ -74,7 +74,7 @@ impl<'a> Decoder<'a> for VmType {
 }
 
 fn register_token(token_address: &Address, vm_ty: VmType) -> bool {
-    assert!(vm_ty != NEO_VM && vm_ty != WASM_VM);
+    assert!(vm_ty == NEO_VM || vm_ty == WASM_VM);
     assert!(runtime::check_witness(&ADMIN));
     let mut tokens = get_registered_token();
     if has_registered_token(&tokens, token_address) {
@@ -114,10 +114,7 @@ fn get_migrate(from: &Address) -> Address {
 }
 
 fn get_registered_token() -> Vec<Token> {
-    if let Some(tokens) = database::get::<_, Vec<Token>>(KEY_TOKEN) {
-        return tokens;
-    }
-    vec![]
+    database::get(KEY_TOKEN).unwrap_or_default()
 }
 
 fn create_stream(
@@ -132,11 +129,12 @@ fn create_stream(
         return false;
     }
     assert!(runtime::check_witness(&from));
-    assert!(amount != 0 && to != from);
+    let cur_contract_addr = runtime::address();
+    let empty_addr = Address::repeat_byte(0);
+    assert!(amount != 0 && &to != &cur_contract_addr && &to != &empty_addr);
     let now = runtime::timestamp();
-    assert!(start_time as u64 >= now && start_time < stop_time);
-    let self_addr = runtime::address();
-    assert!(transfer(&token, &from, &self_addr, amount));
+    assert!(start_time >= now as U128 && start_time < stop_time);
+    assert!(transfer(&token, &from, &cur_contract_addr, amount));
     let stream_id = get_stream_id();
     let stream = Stream {
         stream_id,
@@ -177,7 +175,7 @@ fn balance_of(stream_id: U128, addr: &Address) -> U128 {
         let div_val = mul_val
             .checked_div(stream.stop_time - stream.start_time)
             .unwrap();
-        let to_balance = div_val.checked_sub(stream.transferred).unwrap();
+        let to_balance = div_val.checked_sub(stream.transferred).unwrap_or_default();
         if &stream.from == addr {
             return stream.amount - stream.transferred - to_balance;
         } else if &stream.to == addr {
@@ -205,7 +203,7 @@ fn withdraw_from_stream(stream_id: U128) -> bool {
             should_transfer_amt
         ));
         stream.transferred += should_transfer_amt;
-        database::put(KEY_STREAM, &stream);
+        database::put(utils::gen_stream_key(stream_id), &stream);
         EventBuilder::new()
             .string("withdraw_from_stream")
             .number(stream_id)
@@ -218,23 +216,21 @@ fn withdraw_from_stream(stream_id: U128) -> bool {
 }
 
 fn cancel_stream(stream_id: U128) -> bool {
-    if let Some(stream) = get_stream(stream_id) {
+    if let Some(mut stream) = get_stream(stream_id) {
         assert!(runtime::check_witness(&stream.to) || runtime::check_witness(&stream.from));
         let self_addr = runtime::address();
         let from_balance = balance_of(stream_id, &stream.from);
-        let to_balance = balance_of(stream_id, &stream.from);
+        let to_balance = balance_of(stream_id, &stream.to);
         assert!(transfer(
             &stream.token,
             &self_addr,
             &stream.from,
             from_balance
         ));
-        assert!(transfer(
-            &stream.token,
-            &self_addr,
-            &stream.from,
-            to_balance
-        ));
+        assert!(transfer(&stream.token, &self_addr, &stream.to, to_balance));
+        stream.transferred += from_balance;
+        stream.transferred += to_balance;
+        database::put(utils::gen_stream_key(stream_id), &stream);
         EventBuilder::new()
             .string("cancel_stream")
             .address(&stream.from)
@@ -271,27 +267,70 @@ fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool
     let ty = get_vm_ty(&token_new);
     match ty {
         NEO_VM => {
-            let mut sink = Sink::new(16);
-            sink.write(u128_to_neo_bytes(amount));
-            sink.write_neovm_address(to);
-            sink.write_neovm_address(from);
-            sink.write(83u8);
-            sink.write(193u8);
-            sink.write("transfer".to_string());
-            sink.write(103u8);
-            sink.write(&token_new);
-            let res = runtime::call_contract(&token_new, sink.bytes());
-            if let Some(data) = res {
-                let mut source = Source::new(&data);
-                return source.read().unwrap();
-            } else {
-                return false;
-            }
+            return transfer_neo(token, from, to, amount);
         }
         WASM_VM => {}
         _ => panic!(""),
     }
     false
+}
+fn transfer_neo(token: &Address, from: &Address, to: &Address, amount: U128) -> bool {
+    let mut sink = Sink::new(16);
+    sink.write(0u8); // version
+    sink.write(0x10u8); // list type
+    sink.write(2u32);
+
+    sink.write(01u8); //string type
+    sink.write("transfer".len() as u32);
+    sink.write(b"transfer");
+
+    sink.write(0x10u8); // list type
+
+    sink.write(3u32); // param length
+
+    sink.write(2u8); //address type
+    sink.write(from);
+
+    sink.write(2u8);
+    sink.write(to);
+
+    sink.write(4u8); //u128
+    sink.write(amount);
+    let res = runtime::call_contract(&token, sink.bytes());
+    if let Some(data) = res {
+        if !data.is_empty() {
+            EventBuilder::new().bytearray(data.as_slice()).notify();
+            return true;
+        }
+    }
+    return false;
+}
+
+fn balance_of_neo(addr: &Address) -> U128 {
+    let mut sink = Sink::new(16);
+    sink.write(0u8); // version
+    sink.write(0x10u8); // list type
+    sink.write(2u32);
+
+    sink.write(01u8); //string type
+    sink.write("balance_of".len() as u32);
+    sink.write(b"balance_of");
+
+    sink.write(0x10u8); // list type
+
+    sink.write(1u32); // param length
+
+    sink.write(2u8); //address type
+    sink.write(addr);
+    let res = runtime::call_contract(addr, sink.bytes());
+    if let Some(data) = res {
+        if !data.is_empty() {
+            let mut source = Source::new(data.as_slice());
+            let val: U128 = source.read().unwrap_or_default();
+            return val;
+        }
+    }
+    return 0;
 }
 
 fn check_registered_token(token_addr: &Address) -> bool {
@@ -303,10 +342,10 @@ fn check_registered_token(token_addr: &Address) -> bool {
 }
 
 fn update_stream_id(id: U128) {
-    database::put(KEY_STREAM_ID, id)
+    database::put(KEY_NEXT_STREAM_ID, id)
 }
 fn get_stream_id() -> U128 {
-    if let Some(id) = database::get::<_, U128>(KEY_STREAM_ID) {
+    if let Some(id) = database::get::<_, U128>(KEY_NEXT_STREAM_ID) {
         return id;
     }
     1
@@ -338,6 +377,10 @@ pub fn invoke() {
     let action = source.read().unwrap();
     let mut sink = Sink::new(12);
     match action {
+        "transfer_neo" => {
+            let (token, from, to, amount) = source.read().unwrap();
+            sink.write(transfer_neo(token, from, to, amount));
+        }
         "set_proxy" => {
             let addr = source.read().unwrap();
             sink.write(set_proxy(addr));
@@ -405,7 +448,10 @@ mod utils {
 #[cfg(test)]
 mod tests {
     extern crate ontio_std as ostd;
+    use crate::ostd::abi::Decoder;
+    use hexutil::to_hex;
     use ostd::abi::{Sink, Source};
+    use ostd::contract::contract_mock::NeoCommand;
     use ostd::mock::build_runtime;
     use ostd::prelude::*;
     use ostd::types::{Address, H256};
@@ -429,5 +475,87 @@ mod tests {
         let token3 = Address::repeat_byte(4);
         assert!(crate::add_migrate(&token2, token3.clone()));
         assert_eq!(crate::get_migrate(&token), token3);
+    }
+
+    #[test]
+    fn test_create_stream() {
+        let token = Address::repeat_byte(16);
+        let from = Address::repeat_byte(1);
+        let to = Address::repeat_byte(2);
+        let handle = build_runtime();
+        handle.witness(&[crate::ADMIN]);
+        assert!(crate::register_token(&token, crate::NEO_VM));
+
+        let mut ong_balance_map = HashMap::<Address, U128>::new();
+        ong_balance_map.insert(from.clone(), 10000);
+        ong_balance_map.insert(to.clone(), 10000);
+
+        let call_contract = move |_addr: &Address, _data: &[u8]| -> Option<Vec<u8>> {
+            let mut sink = Sink::new(12);
+            let mut source = Source::new(_data);
+            println!("{}", to_hex(_data));
+            let command = NeoCommand::decode(&mut source).ok().unwrap();
+            match command {
+                NeoCommand::Transfer { from, to, value } => {
+                    let mut from_ba = ong_balance_map.get(from).map(|val| val.clone()).unwrap();
+                    let mut to_ba = ong_balance_map
+                        .get(to)
+                        .map(|val| val.clone())
+                        .unwrap_or_default();
+                    from_ba -= value;
+                    to_ba += value;
+                    ong_balance_map.insert(from.clone(), from_ba);
+                    ong_balance_map.insert(to.clone(), to_ba);
+                    sink.write(true);
+                }
+                NeoCommand::BalanceOf { addr } => {
+                    let ba = ong_balance_map.get(addr).map(|val| val.clone()).unwrap();
+                    sink.write(ba);
+                }
+                _ => {}
+            }
+            return Some(sink.bytes().to_vec());
+        };
+        let contract_addr = Address::repeat_byte(20);
+        handle.address(&contract_addr);
+        handle.on_contract_call(call_contract);
+        handle.timestamp(1);
+        handle.witness(&[&from]);
+        assert!(crate::create_stream(
+            from.clone(),
+            to.clone(),
+            100,
+            token,
+            10,
+            20
+        ));
+
+        assert_eq!(crate::balance_of(1, &from), 100);
+        assert_eq!(crate::balance_of(1, &to), 0);
+        assert_eq!(crate::balance_of_neo(&from), 10000 - 100);
+        assert_eq!(crate::balance_of_neo(&contract_addr), 100);
+
+        handle.timestamp(15);
+        assert_eq!(crate::balance_of(1, &from), 50);
+        assert_eq!(crate::balance_of(1, &to), 50);
+
+        handle.timestamp(21);
+        assert_eq!(crate::balance_of(1, &from), 0);
+        assert_eq!(crate::balance_of(1, &to), 100);
+
+        handle.witness(&[&to]);
+        handle.timestamp(15);
+        assert!(crate::withdraw_from_stream(1));
+        assert_eq!(crate::balance_of_neo(&contract_addr), 50);
+        assert_eq!(crate::balance_of_neo(&to), 10000 + 50);
+        assert_eq!(crate::balance_of(1, &from), 50);
+        assert_eq!(crate::balance_of(1, &to), 0);
+
+        assert!(crate::cancel_stream(1));
+        assert_eq!(crate::balance_of(1, &from), 0);
+        assert_eq!(crate::balance_of(1, &to), 0);
+        assert_eq!(crate::balance_of_neo(&contract_addr), 0);
+        assert_eq!(crate::balance_of_neo(&to), 10000 + 50);
+        assert_eq!(crate::balance_of_neo(&from), 10000 - 100 + 50);
     }
 }
