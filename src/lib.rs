@@ -135,7 +135,7 @@ fn create_stream(
     let now = runtime::timestamp();
     assert!(start_time >= now as U128 && start_time < stop_time);
     assert!(transfer(&token, &from, &cur_contract_addr, amount));
-    let stream_id = get_stream_id();
+    let stream_id = get_next_stream_id();
     let stream = Stream {
         stream_id,
         from,
@@ -208,7 +208,7 @@ fn withdraw_from_stream(stream_id: U128) -> bool {
             .string("withdraw_from_stream")
             .number(stream_id)
             .address(&stream.to)
-            .number(stream.amount)
+            .number(should_transfer_amt)
             .notify();
         return true;
     }
@@ -233,9 +233,9 @@ fn cancel_stream(stream_id: U128) -> bool {
         database::put(utils::gen_stream_key(stream_id), &stream);
         EventBuilder::new()
             .string("cancel_stream")
+            .number(stream_id)
             .address(&stream.from)
             .address(&stream.to)
-            .number(stream_id)
             .number(from_balance)
             .number(to_balance)
             .notify();
@@ -246,7 +246,11 @@ fn cancel_stream(stream_id: U128) -> bool {
 
 fn set_proxy(addr: Address) -> bool {
     assert!(runtime::check_witness(&ADMIN));
-    database::put(KEY_PROXY, addr);
+    database::put(KEY_PROXY, addr.clone());
+    EventBuilder::new()
+        .string("set_proxy")
+        .address(&addr)
+        .notify();
     true
 }
 fn get_proxy() -> Option<Address> {
@@ -344,11 +348,10 @@ fn check_registered_token(token_addr: &Address) -> bool {
 fn update_stream_id(id: U128) {
     database::put(KEY_NEXT_STREAM_ID, id)
 }
-fn get_stream_id() -> U128 {
-    if let Some(id) = database::get::<_, U128>(KEY_NEXT_STREAM_ID) {
-        return id;
-    }
-    1
+fn get_next_stream_id() -> U128 {
+    let id = database::get(KEY_STREAM_ID).unwrap_or(1);
+    database::put(KEY_STREAM_ID, id + 1);
+    id
 }
 
 fn get_vm_ty(token_addr: &Address) -> VmType {
@@ -362,70 +365,65 @@ fn get_vm_ty(token_addr: &Address) -> VmType {
 }
 
 fn has_registered_token(addrs: &[Token], addr: &Address) -> bool {
-    for item in addrs.iter() {
-        if &item.token_address == addr {
-            return true;
-        }
-    }
-    false
+    addrs.iter().any(|item| item.token_address == addr)
 }
 
 #[no_mangle]
 pub fn invoke() {
     let input = runtime::input();
     let mut source = Source::new(&input);
-    let action = source.read().unwrap();
+    let action: &[u8] = source.read().unwrap();
     let mut sink = Sink::new(12);
     match action {
-        "transfer_neo" => {
+        b"transferNeo" => {
             let (token, from, to, amount) = source.read().unwrap();
             sink.write(transfer_neo(token, from, to, amount));
         }
-        "set_proxy" => {
+        b"setProxy" => {
             let addr = source.read().unwrap();
             sink.write(set_proxy(addr));
         }
-        "get_proxy" => {
+        b"getProxy" => {
             if let Some(addr) = get_proxy() {
                 sink.write(addr)
             }
         }
-        "register_token" => {
+        b"registerToken" => {
             let (token_address, token_ty) = source.read().unwrap();
             sink.write(register_token(token_address, token_ty));
         }
-        "get_registered_token" => {
+        b"getRegisteredToken" => {
             sink.write(get_registered_token());
         }
-        "delete_token" => {
+        b"unRegisterToken" => {
             let token_addr = source.read().unwrap();
             sink.write(delete_token(token_addr));
         }
-        "add_migrate" => {
+        b"addMigrate" => {
             let (old_token, new_token) = source.read().unwrap();
             sink.write(add_migrate(old_token, new_token));
         }
-        "create_stream" => {
+        b"createStream" => {
             let (from, to, amount, token, start_time, stop_time) = source.read().unwrap();
             sink.write(create_stream(
                 from, to, amount, token, start_time, stop_time,
             ));
         }
-        "get_stream" => {
+        b"getStream" => {
             let id = source.read().unwrap();
             if let Some(stream) = get_stream(id) {
                 sink.write(stream);
             }
         }
-        "balance_of" => {
+        b"balanceOf" => {
             let (stream_id, addr) = source.read().unwrap();
             sink.write(balance_of(stream_id, addr));
         }
-        "withdraw_from_stream" => {
+        b"withdrawFromStream" => {
             let stream_id = source.read().unwrap();
             sink.write(withdraw_from_stream(stream_id));
         }
-        "cancel_stream" => {
+        b"cancelStream" => {
             let stream_id = source.read().unwrap();
             sink.write(cancel_stream(stream_id));
         }
