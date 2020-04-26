@@ -146,9 +146,8 @@ fn create_stream(
         transferred: 0,
     };
     database::put(utils::gen_stream_key(stream_id), stream);
-    update_stream_id(stream_id + 1);
     EventBuilder::new()
-        .string("create_stream")
+        .string("createStream")
         .number(stream_id)
         .address(&from)
         .address(&to)
@@ -202,12 +201,19 @@ fn withdraw_from_stream(stream_id: U128) -> bool {
             should_transfer_amt
         ));
         stream.transferred += should_transfer_amt;
-        database::put(utils::gen_stream_key(stream_id), &stream);
+        let mut is_completed = false;
+        if stream.transferred == stream.amount {
+            database::delete(utils::gen_stream_key(stream_id));
+            is_completed = true;
+        } else {
+            database::put(utils::gen_stream_key(stream_id), &stream);
+        }
         EventBuilder::new()
-            .string("withdraw_from_stream")
+            .string("withdrawFromStream")
             .number(stream_id)
             .address(&stream.to)
             .number(should_transfer_amt)
+            .bool(is_completed)
             .notify();
         return true;
     }
@@ -227,11 +233,9 @@ fn cancel_stream(stream_id: U128) -> bool {
             from_balance
         ));
         assert!(transfer(&stream.token, &self_addr, &stream.to, to_balance));
-        stream.transferred += from_balance;
-        stream.transferred += to_balance;
-        database::put(utils::gen_stream_key(stream_id), &stream);
+        database::delete(utils::gen_stream_key(stream_id));
         EventBuilder::new()
-            .string("cancel_stream")
+            .string("cancelStream")
             .number(stream_id)
             .address(&stream.from)
             .address(&stream.to)
@@ -247,7 +251,7 @@ fn set_proxy(addr: Address) -> bool {
     assert!(runtime::check_witness(&ADMIN));
     database::put(KEY_PROXY, addr.clone());
     EventBuilder::new()
-        .string("set_proxy")
+        .string("setProxy")
         .address(&addr)
         .notify();
     true
@@ -273,7 +277,7 @@ fn transfer(token: &Address, from: &Address, to: &Address, amount: U128) -> bool
             return transfer_neo(token, from, to, amount);
         }
         WASM_VM => {}
-        _ => panic!(""),
+        _ => panic!("not support vm type"),
     }
     false
 }
@@ -344,12 +348,9 @@ fn check_registered_token(token_addr: &Address) -> bool {
     false
 }
 
-fn update_stream_id(id: U128) {
-    database::put(KEY_NEXT_STREAM_ID, id)
-}
 fn get_next_stream_id() -> U128 {
     let id = database::get(KEY_NEXT_STREAM_ID).unwrap_or(1);
-    update_stream_id(id + 1);
+    database::put(KEY_NEXT_STREAM_ID, id);
     id
 }
 
