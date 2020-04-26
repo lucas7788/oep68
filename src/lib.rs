@@ -7,7 +7,6 @@ use ostd::contract::{ong, ont};
 use ostd::database;
 use ostd::prelude::*;
 use ostd::runtime;
-use ostd::types::u128_to_neo_bytes;
 use ostd::types::{Address, U128};
 
 const ADMIN: Address = ostd::macros::base58!("AbtTQJYKfQxq4UdygDsbLVjE8uRrJ2H3tP");
@@ -349,8 +348,8 @@ fn update_stream_id(id: U128) {
     database::put(KEY_NEXT_STREAM_ID, id)
 }
 fn get_next_stream_id() -> U128 {
-    let id = database::get(KEY_STREAM_ID).unwrap_or(1);
-    database::put(KEY_STREAM_ID, id + 1);
+    let id = database::get(KEY_NEXT_STREAM_ID).unwrap_or(1);
+    update_stream_id(id + 1);
     id
 }
 
@@ -365,7 +364,7 @@ fn get_vm_ty(token_addr: &Address) -> VmType {
 }
 
 fn has_registered_token(addrs: &[Token], addr: &Address) -> bool {
-    addrs.iter().any(|item| item.token_address == addr)
+    addrs.iter().any(|item| &item.token_address == addr)
 }
 
 #[no_mangle]
